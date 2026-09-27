@@ -1,2 +1,18 @@
+# Rust build output
 /target
-/.inspectye
+
+# Inspectye's own index (created by `inspecteye init` in any project)
+.inspectye/
+
+# Dashboard (Node/Tauri) build output and dependencies
+/dashboard/node_modules/
+/dashboard/dist/
+/dashboard/src-tauri/target/
+/dashboard/src-tauri/gen/
+
+# Editors and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

@@ -23,10 +23,60 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+const HELP_FAMILIES: &str = "\
+Command families:
+  Fundamental  init, scan, deep-scan, status        manage Inspectye's knowledge of the project
+  Inspect      inspect <action> <target>            read stored intelligence (never re-analyzes)
+  Check        check [syntax|logic|dependencies]    analyze now; exit code 1 when the check fails
+  Insights     insights [action] [target]           project-wide ranked metrics
+  Tree         tree [target]                        project structure
+  Dashboard    dashboard                            open the desktop dashboard window
+
+Every command accepts --json (one JSON document on stdout, for scripts and AI agents).
+Run 'inspecteye <command> --help' for details, or 'inspecteye --help' for examples.";
+
+const HELP_FAMILIES_LONG: &str = "\
+Command families:
+  Fundamental  init, scan, deep-scan, status        manage Inspectye's knowledge of the project
+  Inspect      inspect <action> <target>            read stored intelligence (never re-analyzes)
+  Check        check [syntax|logic|dependencies]    analyze now; exit code 1 when the check fails
+  Insights     insights [action] [target]           project-wide ranked metrics
+  Tree         tree [target]                        project structure
+  Dashboard    dashboard                            open the desktop dashboard window
+
+Getting started:
+  inspecteye init                     create .inspectye/ and the local database
+  inspecteye scan                     index files and record what changed
+  inspecteye deep-scan                symbols, relationships, diagnostics, external paths
+  inspecteye status                   what Inspectye currently knows
+
+Examples:
+  inspecteye inspect file src/auth.ts            everything known about one file
+  inspecteye inspect symbol AuthService.login    definition, uses, used-by, history
+  inspecteye inspect dependents src/db.ts        who depends on this file
+  inspecteye inspect impact                      what pending edits could affect
+  inspecteye inspect references src/assets.ts    project files, packages, external paths
+  inspecteye check                               preflight: all checks, fails on errors
+  inspecteye check --strict                      warnings fail too
+  inspecteye check logic src/                    suspicious logic in a directory
+  inspecteye insights dependencies               dependency hubs
+  inspecteye tree src --depth 2                  structure of a subtree
+  inspecteye --json inspect file src/auth.ts     the same, as JSON
+
+Findings carry a severity (INFO, WARNING, ERROR) and a certainty (fact,
+inference, possibility); uncertain findings are never reported as ERROR.
+
+JSON output: {\"schema_version\": 1, \"command\", \"ok\", \"data\" | \"error\": {\"kind\", \"message\"}}";
+
 #[derive(Parser, Debug)]
 #[command(name = "inspecteye")]
 #[command(bin_name = "inspecteye")]
-#[command(version, about = "See inside your codebase — local-first codebase intelligence and observability", long_about = None)]
+#[command(
+    version,
+    about = "See inside your codebase — local-first codebase intelligence and observability",
+    after_help = HELP_FAMILIES,
+    after_long_help = HELP_FAMILIES_LONG
+)]
 pub struct Cli {
     /// Print machine-readable JSON instead of human-readable text
     #[arg(long, global = true)]
