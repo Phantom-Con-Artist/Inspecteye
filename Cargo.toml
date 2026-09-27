@@ -1,0 +1,27 @@
+[package]
+name = "inspecteye"
+version = "0.1.0"
+edition = "2021"
+description = "A local-first codebase intelligence and observability application"
+authors = ["Inspectye Contributors"]
+
+[[bin]]
+name = "inspecteye"
+path = "src/main.rs"
+
+[lib]
+name = "inspecteye"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+rusqlite = { version = "0.33", features = ["bundled"] }
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+walkdir = "2.5"
+thiserror = "2.0"
+similar = "3.2.0"
+
+[dev-dependencies]
+tempfile = "3.17"
