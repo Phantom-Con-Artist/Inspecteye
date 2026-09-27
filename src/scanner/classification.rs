@@ -1,5 +1,5 @@
 use crate::scanner::metadata::is_binary_file;
-use std::path::Path;
+use std::path::{Component, Path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
@@ -28,167 +28,254 @@ impl ResourceKind {
     }
 }
 
+/// Directories holding third-party code. Matched case-sensitively, since these
+/// names are conventions of the tools that create them.
+const DEPENDENCY_DIRS: &[&str] = &[
+    "node_modules",
+    "bower_components",
+    "vendor",
+    ".venv",
+    "venv",
+];
+
+/// Directories holding build output. `bin` is handled separately because it
+/// commonly holds hand-written scripts.
+const GENERATED_DIRS: &[&str] = &[
+    "target",
+    "dist",
+    "build",
+    "out",
+    "obj",
+    ".next",
+    ".nuxt",
+    ".output",
+    "__pycache__",
+    "coverage",
+];
+
+/// Configuration build outputs (`bin/Debug`, `bin/Release`) used by .NET and similar toolchains.
+const BUILD_CONFIGURATION_DIRS: &[&str] = &["Debug", "Release", "x64", "x86"];
+
+/// Classifies a resource. The path decides first; file content is only
+/// sampled (for binary detection) when the path gives no answer.
 pub fn classify_resource(rel_path: &Path, abs_path: &Path) -> (String, Option<String>) {
-    // 1. Check directory components for dependency or generated directories
-    for component in rel_path.components() {
-        if let std::path::Component::Normal(c) = component {
-            let seg = c.to_string_lossy().to_lowercase();
-            match seg.as_str() {
-                "node_modules" | "vendor" | "bower_components" | "packages" => {
-                    let (_, lang) = detect_extension_language(rel_path);
-                    return ("dependency".to_string(), lang);
-                }
-                "target" | "dist" | "build" | "out" | "bin" | "obj" | ".next" | ".nuxt"
-                | ".output" => {
-                    let (_, lang) = detect_extension_language(rel_path);
-                    return ("generated".to_string(), lang);
-                }
-                _ => {}
-            }
-        }
+    let (kind, lang) = classify_path(rel_path);
+    if kind != ResourceKind::Unknown {
+        return (kind.as_str().to_string(), lang.map(str::to_string));
     }
-
-    // 2. Check for known binary executable / library extensions
-    let ext = rel_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    match ext.as_str() {
-        "exe" | "dll" | "so" | "dylib" | "bin" | "o" | "obj" | "a" | "lib" | "wasm" | "class"
-        | "pyc" | "pyo" => return ("binary".to_string(), None),
-        _ => {}
-    }
-
-    // 3. Check special filenames
-    let file_name = rel_path
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    match file_name.as_str() {
-        "cargo.toml" | "cargo.lock" => return ("config".to_string(), Some("toml".to_string())),
-        "package.json" | "package-lock.json" | "tsconfig.json" => {
-            return ("config".to_string(), Some("json".to_string()))
-        }
-        "readme.md" | "license" | "contributing.md" | "agents.md" | "changelog.md" => {
-            return ("documentation".to_string(), Some("markdown".to_string()))
-        }
-        ".gitignore" | ".gitattributes" | ".editorconfig" | ".inspecteyeignore" => {
-            return ("config".to_string(), None)
-        }
-        _ => {}
-    }
-
-    // 4. Extension-based classification
-    let (kind, lang) = detect_extension_language(rel_path);
-    if kind != "unknown" {
-        return (kind, lang);
-    }
-
-    // 5. Inspect file content for binary detection
     if is_binary_file(abs_path).unwrap_or(false) {
-        ("binary".to_string(), None)
+        (ResourceKind::Binary.as_str().to_string(), None)
     } else {
-        ("unknown".to_string(), None)
+        (ResourceKind::Unknown.as_str().to_string(), None)
     }
 }
 
-fn detect_extension_language(path: &Path) -> (String, Option<String>) {
-    let ext = path
-        .extension()
+/// Path-only classification, without reading the file.
+pub fn classify_path(rel_path: &Path) -> (ResourceKind, Option<&'static str>) {
+    let lang = language_for(rel_path);
+
+    let dirs: Vec<&str> = rel_path
+        .parent()
+        .map(|p| {
+            p.components()
+                .filter_map(|c| match c {
+                    Component::Normal(s) => s.to_str(),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for (i, dir) in dirs.iter().enumerate() {
+        if DEPENDENCY_DIRS.contains(dir) {
+            return (ResourceKind::Dependency, lang);
+        }
+        if GENERATED_DIRS.contains(dir) {
+            return (ResourceKind::Generated, lang);
+        }
+        if *dir == "bin"
+            && dirs
+                .get(i + 1)
+                .is_some_and(|next| BUILD_CONFIGURATION_DIRS.contains(next))
+        {
+            return (ResourceKind::Generated, lang);
+        }
+    }
+
+    let file_name = rel_path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+    if let Some(found) = classify_file_name(file_name) {
+        return found;
+    }
+
+    let ext = extension_of(rel_path);
+    if let Some(kind) = kind_for_extension(&ext) {
+        return (kind, lang);
+    }
+    (ResourceKind::Unknown, None)
+}
+
+fn classify_file_name(name: &str) -> Option<(ResourceKind, Option<&'static str>)> {
+    let lower = name.to_lowercase();
+    let found = match lower.as_str() {
+        "cargo.lock" | "cargo.toml" => (ResourceKind::Config, Some("toml")),
+        "package.json" | "package-lock.json" | "tsconfig.json" | "composer.json" => {
+            (ResourceKind::Config, Some("json"))
+        }
+        "makefile" | "gnumakefile" => (ResourceKind::Config, Some("make")),
+        "dockerfile" | "containerfile" => (ResourceKind::Config, Some("dockerfile")),
+        "cmakelists.txt" => (ResourceKind::Config, Some("cmake")),
+        "gemfile" | "rakefile" | "podfile" => (ResourceKind::Config, Some("ruby")),
+        "jenkinsfile" | "procfile" | "yarn.lock" | "pnpm-lock.yaml" | "go.mod" | "go.sum"
+        | "requirements.txt" | "pipfile" | "pipfile.lock" | "poetry.lock" => {
+            (ResourceKind::Config, None)
+        }
+        ".gitignore" | ".gitattributes" | ".gitmodules" | ".editorconfig" | ".inspecteyeignore"
+        | ".dockerignore" | ".npmrc" | ".nvmrc" | ".prettierrc" | ".eslintrc" | ".babelrc" => {
+            (ResourceKind::Config, None)
+        }
+        "license" | "licence" | "copying" | "notice" | "authors" | "readme" | "changelog" => {
+            (ResourceKind::Documentation, None)
+        }
+        _ if lower == ".env" || lower.starts_with(".env.") => {
+            (ResourceKind::Config, Some("dotenv"))
+        }
+        _ => return None,
+    };
+    Some(found)
+}
+
+fn extension_of(path: &Path) -> String {
+    path.extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
-        .to_lowercase();
+        .to_lowercase()
+}
 
-    match ext.as_str() {
-        "rs" => ("source".to_string(), Some("rust".to_string())),
-        "ts" | "tsx" => ("source".to_string(), Some("typescript".to_string())),
-        "js" | "jsx" | "mjs" | "cjs" => ("source".to_string(), Some("javascript".to_string())),
-        "cs" => ("source".to_string(), Some("csharp".to_string())),
-        "c" | "h" => ("source".to_string(), Some("c".to_string())),
-        "cpp" | "hpp" | "cc" | "cxx" => ("source".to_string(), Some("cpp".to_string())),
-        "py" => ("source".to_string(), Some("python".to_string())),
-        "go" => ("source".to_string(), Some("go".to_string())),
-        "java" => ("source".to_string(), Some("java".to_string())),
-        "rb" => ("source".to_string(), Some("ruby".to_string())),
-        "php" => ("source".to_string(), Some("php".to_string())),
-        "html" | "htm" => ("source".to_string(), Some("html".to_string())),
-        "css" | "scss" | "sass" | "less" => ("source".to_string(), Some("css".to_string())),
-        "sql" => ("source".to_string(), Some("sql".to_string())),
-        "sh" | "bash" | "zsh" => ("source".to_string(), Some("shell".to_string())),
-        "ps1" => ("source".to_string(), Some("powershell".to_string())),
-        "bat" | "cmd" => ("source".to_string(), Some("batch".to_string())),
+fn kind_for_extension(ext: &str) -> Option<ResourceKind> {
+    let kind = match ext {
+        "exe" | "dll" | "so" | "dylib" | "bin" | "o" | "obj" | "a" | "lib" | "wasm" | "class"
+        | "pyc" | "pyo" | "pdb" | "jar" => ResourceKind::Binary,
 
-        "json" => ("config".to_string(), Some("json".to_string())),
-        "toml" => ("config".to_string(), Some("toml".to_string())),
-        "yaml" | "yml" => ("config".to_string(), Some("yaml".to_string())),
-        "xml" => ("config".to_string(), Some("xml".to_string())),
-        "ini" | "cfg" | "conf" | "env" | "properties" => ("config".to_string(), None),
+        "json" | "jsonc" | "toml" | "yaml" | "yml" | "xml" | "ini" | "cfg" | "conf" | "env"
+        | "properties" | "lock" | "csproj" | "fsproj" | "vbproj" | "sln" | "props" | "targets"
+        | "gradle" | "editorconfig" => ResourceKind::Config,
 
-        "md" | "markdown" | "txt" | "rst" | "adoc" => {
-            ("documentation".to_string(), Some("markdown".to_string()))
+        "md" | "markdown" | "txt" | "rst" | "adoc" => ResourceKind::Documentation,
+
+        "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" | "webp" | "bmp" | "ttf" | "otf"
+        | "woff" | "woff2" | "eot" | "mp3" | "wav" | "ogg" | "mp4" | "webm" | "pdf" => {
+            ResourceKind::Asset
         }
 
-        "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" | "webp" | "bmp" => {
-            ("asset".to_string(), None)
-        }
-        "ttf" | "woff" | "woff2" | "eot" => ("asset".to_string(), None),
-        "mp3" | "wav" | "ogg" | "mp4" | "webm" => ("asset".to_string(), None),
+        _ if language_for_extension(ext).is_some() => ResourceKind::Source,
+        _ => return None,
+    };
+    Some(kind)
+}
 
-        _ => ("unknown".to_string(), None),
+/// Language of a resource, derived from its name. Used for source and config files.
+pub fn language_for(path: &Path) -> Option<&'static str> {
+    let ext = extension_of(path);
+    if let Some(lang) = language_for_extension(&ext) {
+        return Some(lang);
     }
+    match ext.as_str() {
+        "json" | "jsonc" => Some("json"),
+        "toml" => Some("toml"),
+        "yaml" | "yml" => Some("yaml"),
+        "xml" | "csproj" | "fsproj" | "vbproj" | "props" | "targets" => Some("xml"),
+        "md" | "markdown" => Some("markdown"),
+        _ => None,
+    }
+}
+
+fn language_for_extension(ext: &str) -> Option<&'static str> {
+    let lang = match ext {
+        "rs" => "rust",
+        "ts" | "tsx" | "mts" | "cts" => "typescript",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "cs" => "csharp",
+        "c" | "h" => "c",
+        "cpp" | "hpp" | "cc" | "cxx" | "hh" | "hxx" => "cpp",
+        "py" | "pyi" => "python",
+        "go" => "go",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "swift" => "swift",
+        "scala" => "scala",
+        "rb" => "ruby",
+        "php" => "php",
+        "lua" => "lua",
+        "dart" => "dart",
+        "vue" => "vue",
+        "svelte" => "svelte",
+        "html" | "htm" => "html",
+        "css" | "scss" | "sass" | "less" => "css",
+        "sql" => "sql",
+        "sh" | "bash" | "zsh" => "shell",
+        "ps1" | "psm1" => "powershell",
+        "bat" | "cmd" => "batch",
+        _ => return None,
+    };
+    Some(lang)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn kind(path: &str) -> ResourceKind {
+        classify_path(Path::new(path)).0
+    }
+
     #[test]
     fn test_classify_resource_types() {
-        let dummy = Path::new("dummy");
+        assert_eq!(kind("src/main.rs"), ResourceKind::Source);
+        assert_eq!(kind("package.json"), ResourceKind::Config);
+        assert_eq!(kind("README.md"), ResourceKind::Documentation);
+        assert_eq!(kind("assets/logo.svg"), ResourceKind::Asset);
+        assert_eq!(
+            kind("node_modules/lodash/index.js"),
+            ResourceKind::Dependency
+        );
+        assert_eq!(
+            kind("vendor/bundle/gems/rails.rb"),
+            ResourceKind::Dependency
+        );
+        assert_eq!(kind("dist/app.bundle.js"), ResourceKind::Generated);
+        assert_eq!(kind("target/debug/build.log"), ResourceKind::Generated);
+        assert_eq!(kind("native/driver.dll"), ResourceKind::Binary);
+    }
 
-        assert_eq!(
-            classify_resource(Path::new("src/main.rs"), dummy).0,
-            "source"
-        );
-        assert_eq!(
-            classify_resource(Path::new("package.json"), dummy).0,
-            "config"
-        );
-        assert_eq!(
-            classify_resource(Path::new("README.md"), dummy).0,
-            "documentation"
-        );
-        assert_eq!(
-            classify_resource(Path::new("assets/logo.svg"), dummy).0,
-            "asset"
-        );
-        assert_eq!(
-            classify_resource(Path::new("node_modules/lodash/index.js"), dummy).0,
-            "dependency"
-        );
-        assert_eq!(
-            classify_resource(Path::new("vendor/bundle/gems/rails.rb"), dummy).0,
-            "dependency"
-        );
-        assert_eq!(
-            classify_resource(Path::new("dist/app.bundle.js"), dummy).0,
-            "generated"
-        );
-        assert_eq!(
-            classify_resource(Path::new("target/debug/build.log"), dummy).0,
-            "generated"
-        );
-        assert_eq!(
-            classify_resource(Path::new("bin/tool.exe"), dummy).0,
-            "generated" // matches bin/ component
-        );
-        assert_eq!(
-            classify_resource(Path::new("native/driver.dll"), dummy).0,
-            "binary"
-        );
+    #[test]
+    fn test_first_party_directories_are_not_misclassified() {
+        // Monorepo package folders are first-party code.
+        assert_eq!(kind("packages/core/src/index.ts"), ResourceKind::Source);
+        // Directory conventions are case-sensitive.
+        assert_eq!(kind("Build/Tasks.cs"), ResourceKind::Source);
+        // Scripts in bin/ are hand-written; bin/Debug is build output.
+        assert_eq!(kind("bin/run.sh"), ResourceKind::Source);
+        assert_eq!(kind("src/App/bin/Debug/App.dll"), ResourceKind::Generated);
+        // A file named like a generated dir is not inside one.
+        assert_eq!(kind("src/build.rs"), ResourceKind::Source);
+    }
+
+    #[test]
+    fn test_well_known_file_names() {
+        assert_eq!(kind("Makefile"), ResourceKind::Config);
+        assert_eq!(kind("docker/Dockerfile"), ResourceKind::Config);
+        assert_eq!(kind(".env"), ResourceKind::Config);
+        assert_eq!(kind(".env.local"), ResourceKind::Config);
+        assert_eq!(kind("CMakeLists.txt"), ResourceKind::Config);
+        assert_eq!(kind("LICENSE"), ResourceKind::Documentation);
+        assert_eq!(kind("App.csproj"), ResourceKind::Config);
+    }
+
+    #[test]
+    fn test_language_detection() {
+        assert_eq!(classify_path(Path::new("a.tsx")).1, Some("typescript"));
+        assert_eq!(classify_path(Path::new("a.kt")).1, Some("kotlin"));
+        assert_eq!(classify_path(Path::new("a.json")).1, Some("json"));
+        assert_eq!(classify_path(Path::new("logo.png")).1, None);
     }
 }

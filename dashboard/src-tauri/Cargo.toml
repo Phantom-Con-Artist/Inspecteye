@@ -1,0 +1,23 @@
+[package]
+name = "inspecteye-dashboard"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop dashboard for Inspectye"
+publish = false
+
+[[bin]]
+name = "inspecteye-dashboard"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# The dashboard calls the same core as the CLI, in-process.
+inspecteye = { path = "../.." }
+tauri = { version = "2", features = [] }
+serde = "1"
+serde_json = "1"
+
+# Built on its own, so the CLI build does not pull in Tauri.
+[workspace]

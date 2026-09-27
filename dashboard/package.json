@@ -1,0 +1,20 @@
+{
+  "name": "inspecteye-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop dashboard for Inspectye (Tauri). Opened by `inspecteye dashboard`.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:web": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tauri build --no-bundle",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.0",
+    "typescript": "^5.9.3"
+  }
+}

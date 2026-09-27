@@ -1,8 +1,10 @@
 use chrono::Utc;
+use serde::Serialize;
 pub use similar::ChangeTag;
 use similar::TextDiff;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TransitionType {
     New,
     Modified,
@@ -36,7 +38,7 @@ impl TransitionType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileState {
     pub id: Option<i64>,
     pub project_id: i64,
@@ -48,6 +50,7 @@ pub struct FileState {
     pub git_commit: Option<String>,
     pub line_count: Option<usize>,
     pub size_bytes: u64,
+    #[serde(skip)]
     pub content: Option<String>,
     pub exists_on_disk: bool,
 }
@@ -71,15 +74,16 @@ impl FileState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DiffLine {
+    #[serde(serialize_with = "serialize_tag")]
     pub tag: ChangeTag,
     pub old_line_no: Option<usize>,
     pub new_line_no: Option<usize>,
     pub content: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DiffHunk {
     pub old_start: usize,
     pub old_lines: usize,
@@ -88,7 +92,7 @@ pub struct DiffHunk {
     pub lines: Vec<DiffLine>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StateTransition {
     pub file_id: i64,
     pub path: String,
@@ -100,6 +104,12 @@ pub struct StateTransition {
     pub removed_lines: usize,
     pub hunks: Vec<DiffHunk>,
     pub created_at: String,
+    /// True when the current state is the working tree and has not yet been
+    /// recorded by a scan; false when this describes the last recorded transition.
+    pub pending: bool,
+    /// Symbols whose code differs between the two states, when the language
+    /// is supported and both states have text snapshots.
+    pub symbol_changes: Vec<crate::intelligence::SymbolChange>,
 }
 
 impl StateTransition {
@@ -118,6 +128,8 @@ impl StateTransition {
             removed_lines: 0,
             hunks: Vec::new(),
             created_at: Utc::now().to_rfc3339(),
+            pending: false,
+            symbol_changes: Vec::new(),
         }
     }
 
@@ -136,6 +148,8 @@ impl StateTransition {
             removed_lines,
             hunks: Vec::new(),
             created_at: Utc::now().to_rfc3339(),
+            pending: false,
+            symbol_changes: Vec::new(),
         }
     }
 
@@ -153,6 +167,8 @@ impl StateTransition {
             removed_lines: 0,
             hunks: Vec::new(),
             created_at: Utc::now().to_rfc3339(),
+            pending: false,
+            symbol_changes: Vec::new(),
         }
     }
 
@@ -195,12 +211,31 @@ impl StateTransition {
             removed_lines,
             hunks,
             created_at: Utc::now().to_rfc3339(),
+            pending: false,
+            symbol_changes: Vec::new(),
         }
+    }
+
+    /// Marks the transition as describing unscanned working-tree changes.
+    pub fn into_pending(mut self) -> Self {
+        self.pending = true;
+        self
     }
 
     pub fn format_terminal(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("File: {}\n\n", self.path));
+        out.push_str(&format!("File: {}\n", self.path));
+        if self.transition_type != TransitionType::Unchanged {
+            if self.pending {
+                out.push_str("Source: working tree (pending, not yet recorded by a scan)\n");
+            } else {
+                out.push_str(&format!(
+                    "Source: last recorded change (scan at {})\n",
+                    self.to_state.recorded_at
+                ));
+            }
+        }
+        out.push('\n');
 
         match self.transition_type {
             TransitionType::Unchanged => {
@@ -267,7 +302,33 @@ impl StateTransition {
         out
     }
 
+    fn format_symbol_changes(&self, out: &mut String) {
+        if self.symbol_changes.is_empty() {
+            return;
+        }
+        out.push_str(
+            "Symbols changed:
+",
+        );
+        for c in &self.symbol_changes {
+            let lines = c
+                .new_range
+                .or(c.old_range)
+                .map(|r| format!("lines {}-{}", r.start_line, r.end_line))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "  {:<9} {:<12} {}  ({})
+",
+                c.change.as_str(),
+                c.kind.as_str(),
+                c.qualified_name,
+                lines
+            ));
+        }
+    }
+
     fn format_diff_details(&self, out: &mut String) {
+        self.format_symbol_changes(out);
         if let Some(prev) = &self.from_state {
             out.push_str("Previous state:\n");
             out.push_str(&format!("  Hash:     {}\n", short_hash(&prev.content_hash)));
@@ -317,6 +378,14 @@ impl StateTransition {
             }
         }
     }
+}
+
+fn serialize_tag<S: serde::Serializer>(tag: &ChangeTag, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(match tag {
+        ChangeTag::Equal => "equal",
+        ChangeTag::Delete => "delete",
+        ChangeTag::Insert => "insert",
+    })
 }
 
 fn short_hash(hash: &str) -> String {

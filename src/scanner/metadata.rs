@@ -5,75 +5,10 @@ use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMetadata {
-    pub kind: String,
-    pub language: Option<String>,
     pub size_bytes: i64,
+    /// Filesystem modification time (RFC 3339), when the platform reports one.
+    pub modified_at: Option<String>,
     pub line_count: Option<i64>,
-}
-
-pub fn detect_kind_and_language(path: &Path) -> (String, Option<String>) {
-    let file_name = path
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    // Check special file names first
-    match file_name.as_str() {
-        "cargo.toml" | "cargo.lock" => return ("config".to_string(), Some("toml".to_string())),
-        "package.json" | "package-lock.json" | "tsconfig.json" => {
-            return ("config".to_string(), Some("json".to_string()))
-        }
-        "readme.md" | "license" | "contributing.md" | "agents.md" => {
-            return ("documentation".to_string(), Some("markdown".to_string()))
-        }
-        ".gitignore" | ".gitattributes" | ".editorconfig" => return ("config".to_string(), None),
-        _ => {}
-    }
-
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    match ext.as_str() {
-        "rs" => ("source".to_string(), Some("rust".to_string())),
-        "ts" | "tsx" => ("source".to_string(), Some("typescript".to_string())),
-        "js" | "jsx" | "mjs" | "cjs" => ("source".to_string(), Some("javascript".to_string())),
-        "cs" => ("source".to_string(), Some("csharp".to_string())),
-        "c" | "h" => ("source".to_string(), Some("c".to_string())),
-        "cpp" | "hpp" | "cc" | "cxx" => ("source".to_string(), Some("cpp".to_string())),
-        "py" => ("source".to_string(), Some("python".to_string())),
-        "go" => ("source".to_string(), Some("go".to_string())),
-        "java" => ("source".to_string(), Some("java".to_string())),
-        "rb" => ("source".to_string(), Some("ruby".to_string())),
-        "php" => ("source".to_string(), Some("php".to_string())),
-        "html" | "htm" => ("source".to_string(), Some("html".to_string())),
-        "css" | "scss" | "sass" | "less" => ("source".to_string(), Some("css".to_string())),
-        "sql" => ("source".to_string(), Some("sql".to_string())),
-        "sh" | "bash" | "zsh" => ("source".to_string(), Some("shell".to_string())),
-        "ps1" => ("source".to_string(), Some("powershell".to_string())),
-        "bat" | "cmd" => ("source".to_string(), Some("batch".to_string())),
-
-        "json" => ("config".to_string(), Some("json".to_string())),
-        "toml" => ("config".to_string(), Some("toml".to_string())),
-        "yaml" | "yml" => ("config".to_string(), Some("yaml".to_string())),
-        "xml" => ("config".to_string(), Some("xml".to_string())),
-        "ini" | "cfg" | "conf" | "env" => ("config".to_string(), None),
-
-        "md" | "markdown" | "txt" | "rst" => {
-            ("documentation".to_string(), Some("markdown".to_string()))
-        }
-
-        "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" | "webp" | "bmp" => {
-            ("asset".to_string(), None)
-        }
-        "ttf" | "woff" | "woff2" | "eot" => ("asset".to_string(), None),
-        "mp3" | "wav" | "ogg" | "mp4" | "webm" => ("asset".to_string(), None),
-
-        _ => ("unknown".to_string(), None),
-    }
 }
 
 pub fn is_binary_file(path: &Path) -> Result<bool> {
@@ -113,13 +48,15 @@ pub fn count_lines(path: &Path) -> Result<Option<i64>> {
 pub fn inspect_file_metadata(path: &Path) -> Result<FileMetadata> {
     let fs_meta = std::fs::metadata(path)?;
     let size_bytes = fs_meta.len() as i64;
-    let (kind, language) = detect_kind_and_language(path);
+    let modified_at = fs_meta
+        .modified()
+        .ok()
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
     let line_count = count_lines(path).unwrap_or(None);
 
     Ok(FileMetadata {
-        kind,
-        language,
         size_bytes,
+        modified_at,
         line_count,
     })
 }
@@ -129,30 +66,6 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_detect_kind_and_language() {
-        assert_eq!(
-            detect_kind_and_language(Path::new("src/main.rs")),
-            ("source".to_string(), Some("rust".to_string()))
-        );
-        assert_eq!(
-            detect_kind_and_language(Path::new("src/index.tsx")),
-            ("source".to_string(), Some("typescript".to_string()))
-        );
-        assert_eq!(
-            detect_kind_and_language(Path::new("package.json")),
-            ("config".to_string(), Some("json".to_string()))
-        );
-        assert_eq!(
-            detect_kind_and_language(Path::new("logo.png")),
-            ("asset".to_string(), None)
-        );
-        assert_eq!(
-            detect_kind_and_language(Path::new("README.md")),
-            ("documentation".to_string(), Some("markdown".to_string()))
-        );
-    }
 
     #[test]
     fn test_text_and_binary_line_count() {

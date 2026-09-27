@@ -1,3 +1,59 @@
+use serde::Serialize;
+/// A diagnostic together with the file it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StoredDiagnostic {
+    pub id: i64,
+    pub file_id: i64,
+    pub path: String,
+    pub content_hash: String,
+    pub diagnostic: crate::issues::Diagnostic,
+}
+
+/// A persisted symbol. `symbol.parent` is not used; see `parent_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StoredSymbol {
+    pub id: i64,
+    pub file_id: i64,
+    pub path: String,
+    pub parent_id: Option<i64>,
+    pub symbol: crate::intelligence::ExtractedSymbol,
+}
+
+/// A recorded change of one symbol between two analyses of its file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StoredSymbolChange {
+    pub file_id: i64,
+    pub path: String,
+    pub identity: String,
+    pub kind: String,
+    pub qualified_name: String,
+    pub change: String,
+    pub created_at: String,
+}
+
+/// An external reference found in a file, with its latest evaluation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StoredExternalReference {
+    pub id: i64,
+    pub file_id: i64,
+    /// The project file containing the reference.
+    pub file_path: String,
+    pub reference: crate::intelligence::ExternalReference,
+    /// `None` until the reference has been checked.
+    pub check: Option<crate::intelligence::ExternalCheck>,
+    pub checked_at: Option<String>,
+}
+
+/// A persisted relationship with the paths and symbol names it connects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StoredRelationship {
+    pub relationship: crate::intelligence::ResolvedRelationship,
+    pub source_path: String,
+    pub source_symbol: Option<String>,
+    pub target_path: Option<String>,
+    pub target_symbol: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
     pub id: i64,
@@ -7,7 +63,7 @@ pub struct Project {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileRecord {
     pub id: i64,
     pub project_id: i64,
@@ -20,6 +76,7 @@ pub struct FileRecord {
     pub git_tracked: bool,
     pub exists_on_disk: bool,
     pub is_ignored: bool,
+    pub modified_at: Option<String>,
     pub last_seen_at: String,
     pub last_analyzed_at: Option<String>,
 }
@@ -36,10 +93,11 @@ pub struct NewFileRecord {
     pub git_tracked: bool,
     pub exists_on_disk: bool,
     pub is_ignored: bool,
+    pub modified_at: Option<String>,
     pub last_seen_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AnalysisRun {
     pub id: i64,
     pub project_id: i64,
@@ -57,7 +115,7 @@ pub struct AnalysisRun {
     pub files_failed: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileAnalysisRecord {
     pub file_id: i64,
     pub content_hash: String,
@@ -68,7 +126,7 @@ pub struct FileAnalysisRecord {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct FileStats {
     pub total_known_files: usize,
     pub discovered_files: usize,

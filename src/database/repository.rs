@@ -24,6 +24,23 @@ impl Repository {
         &mut self.conn
     }
 
+    /// Starts an explicit transaction. Batching a scan's writes into one
+    /// transaction avoids a disk sync per file.
+    pub fn begin(&mut self) -> Result<()> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(())
+    }
+
+    pub fn commit(&mut self) -> Result<()> {
+        self.conn.execute_batch("COMMIT")?;
+        Ok(())
+    }
+
+    pub fn rollback(&mut self) -> Result<()> {
+        self.conn.execute_batch("ROLLBACK")?;
+        Ok(())
+    }
+
     pub fn get_or_create_project(&mut self, root_path: &Path, name: &str) -> Result<Project> {
         let root_str = root_path.to_string_lossy().to_string();
         let now = Utc::now().to_rfc3339();
@@ -116,7 +133,8 @@ impl Repository {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT id, project_id, path, kind, language, size_bytes, line_count,
-                   content_hash, git_tracked, exists_on_disk, is_ignored, last_seen_at, last_analyzed_at
+                   content_hash, git_tracked, exists_on_disk, is_ignored, last_seen_at, last_analyzed_at,
+                   modified_at
             FROM files
             WHERE project_id = ?1
             ORDER BY path ASC
@@ -138,6 +156,7 @@ impl Repository {
                 is_ignored: row.get::<_, i64>(10)? != 0,
                 last_seen_at: row.get(11)?,
                 last_analyzed_at: row.get(12)?,
+                modified_at: row.get(13)?,
             })
         })?;
 
@@ -156,7 +175,8 @@ impl Repository {
             .query_row(
                 r#"
                 SELECT id, project_id, path, kind, language, size_bytes, line_count,
-                       content_hash, git_tracked, exists_on_disk, is_ignored, last_seen_at, last_analyzed_at
+                       content_hash, git_tracked, exists_on_disk, is_ignored, last_seen_at, last_analyzed_at,
+                       modified_at
                 FROM files
                 WHERE project_id = ?1 AND (path = ?2 OR path = ?3)
                 "#,
@@ -176,6 +196,7 @@ impl Repository {
                         is_ignored: row.get::<_, i64>(10)? != 0,
                         last_seen_at: row.get(11)?,
                         last_analyzed_at: row.get(12)?,
+                modified_at: row.get(13)?,
                     })
                 },
             )
@@ -189,8 +210,9 @@ impl Repository {
             r#"
             INSERT INTO files (
                 project_id, path, kind, language, size_bytes, line_count,
-                content_hash, git_tracked, exists_on_disk, is_ignored, last_seen_at, last_analyzed_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL)
+                content_hash, git_tracked, exists_on_disk, is_ignored, last_seen_at, last_analyzed_at,
+                modified_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, ?12)
             ON CONFLICT(project_id, path) DO UPDATE SET
                 kind = excluded.kind,
                 language = excluded.language,
@@ -200,7 +222,8 @@ impl Repository {
                 git_tracked = excluded.git_tracked,
                 exists_on_disk = excluded.exists_on_disk,
                 is_ignored = excluded.is_ignored,
-                last_seen_at = excluded.last_seen_at
+                last_seen_at = excluded.last_seen_at,
+                modified_at = excluded.modified_at
             "#,
             params![
                 record.project_id,
@@ -214,6 +237,7 @@ impl Repository {
                 if record.exists_on_disk { 1 } else { 0 },
                 if record.is_ignored { 1 } else { 0 },
                 record.last_seen_at,
+                record.modified_at,
             ],
         )?;
 
@@ -385,6 +409,44 @@ impl Repository {
             )
             .optional()?;
 
+        Ok(run)
+    }
+
+    /// Latest working-tree scan, whatever triggered it (CLI, refresh, watcher).
+    pub fn get_latest_scan_run(&self, project_id: i64) -> Result<Option<AnalysisRun>> {
+        let run = self
+            .conn
+            .query_row(
+                r#"
+                SELECT id, project_id, started_at, finished_at, status, trigger,
+                       files_scanned, files_new, files_changed, files_unchanged,
+                       files_restored, files_restored_changed, files_removed, files_failed
+                FROM analysis_runs
+                WHERE project_id = ?1 AND trigger != 'deep_scan'
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+                params![project_id],
+                |row| {
+                    Ok(AnalysisRun {
+                        id: row.get(0)?,
+                        project_id: row.get(1)?,
+                        started_at: row.get(2)?,
+                        finished_at: row.get(3)?,
+                        status: row.get(4)?,
+                        trigger: row.get(5)?,
+                        files_scanned: row.get(6)?,
+                        files_new: row.get(7)?,
+                        files_changed: row.get(8)?,
+                        files_unchanged: row.get(9)?,
+                        files_restored: row.get(10)?,
+                        files_restored_changed: row.get(11)?,
+                        files_removed: row.get(12)?,
+                        files_failed: row.get(13)?,
+                    })
+                },
+            )
+            .optional()?;
         Ok(run)
     }
 
@@ -570,6 +632,45 @@ impl Repository {
         Ok(state)
     }
 
+    /// Latest state with `id < before_id` in which the file existed on disk.
+    /// Used as the diff base when a file reappears after removal.
+    pub fn get_latest_existing_state_before(
+        &self,
+        file_id: i64,
+        before_id: i64,
+    ) -> Result<Option<FileStateRecord>> {
+        let state = self
+            .conn
+            .query_row(
+                r#"
+                SELECT id, project_id, file_id, content_hash, recorded_at, source,
+                       git_commit, line_count, size_bytes, content, exists_on_disk
+                FROM file_states
+                WHERE file_id = ?1 AND id < ?2 AND exists_on_disk = 1
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+                params![file_id, before_id],
+                |row| {
+                    Ok(FileStateRecord {
+                        id: row.get(0)?,
+                        project_id: row.get(1)?,
+                        file_id: row.get(2)?,
+                        content_hash: row.get(3)?,
+                        recorded_at: row.get(4)?,
+                        source: row.get(5)?,
+                        git_commit: row.get(6)?,
+                        line_count: row.get(7)?,
+                        size_bytes: row.get(8)?,
+                        content: row.get(9)?,
+                        exists_on_disk: row.get::<_, i64>(10)? != 0,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(state)
+    }
+
     pub fn find_file_state_by_hash(
         &self,
         file_id: i64,
@@ -665,6 +766,39 @@ impl Repository {
             )
             .optional()?;
         Ok(record)
+    }
+
+    /// Number of recorded content changes (modified/restored) per file on disk.
+    pub fn recorded_change_counts(&self, project_id: i64) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT f.path, COUNT(*)
+            FROM state_transitions t JOIN files f ON f.id = t.file_id
+            WHERE t.project_id = ?1 AND f.exists_on_disk = 1
+              AND t.transition_type IN ('modified', 'restored', 'restored_modified')
+            GROUP BY f.path
+            "#,
+        )?;
+        let rows = stmt.query_map(params![project_id], |row| {
+            Ok((row.get(0)?, row.get::<_, i64>(1)? as usize))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// Transitions recorded by one analysis run.
+    pub fn get_run_transitions(&self, run_id: i64) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT f.path, t.transition_type
+            FROM state_transitions t JOIN files f ON f.id = t.file_id
+            WHERE t.analysis_run_id = ?1
+            ORDER BY f.path
+            "#,
+        )?;
+        let rows = stmt.query_map(params![run_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     pub fn get_all_state_transitions(&self, file_id: i64) -> Result<Vec<StateTransitionRecord>> {

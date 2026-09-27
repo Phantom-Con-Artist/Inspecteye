@@ -128,6 +128,180 @@ const MIGRATIONS: &[Migration] = &[
         CREATE INDEX IF NOT EXISTS idx_state_transitions_file ON state_transitions(file_id, created_at);
         "#,
     },
+    Migration {
+        version: 6,
+        name: "add_modified_at_to_files",
+        sql: r#"
+        ALTER TABLE files ADD COLUMN modified_at TEXT;
+        "#,
+    },
+    Migration {
+        version: 7,
+        name: "add_diagnostics",
+        sql: r#"
+        CREATE TABLE IF NOT EXISTS diagnostics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            category TEXT NOT NULL,
+            rule TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            certainty TEXT NOT NULL,
+            message TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            start_column INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            end_column INTEGER NOT NULL,
+            start_byte INTEGER NOT NULL,
+            end_byte INTEGER NOT NULL,
+            excerpt TEXT NOT NULL,
+            expected TEXT,
+            evidence TEXT,
+            symbol TEXT,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_diagnostics_file ON diagnostics(file_id, category);
+        CREATE INDEX IF NOT EXISTS idx_diagnostics_project ON diagnostics(project_id, category, severity);
+        "#,
+    },
+    Migration {
+        version: 8,
+        name: "add_symbols_and_symbol_changes",
+        sql: r#"
+        CREATE TABLE IF NOT EXISTS symbols (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            parent_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
+            identity TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            qualified_name TEXT NOT NULL,
+            signature TEXT NOT NULL,
+            modifiers TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            start_column INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            end_column INTEGER NOT NULL,
+            start_byte INTEGER NOT NULL,
+            end_byte INTEGER NOT NULL,
+            body_hash TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            UNIQUE(file_id, identity)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_symbols_project_name ON symbols(project_id, name);
+
+        CREATE TABLE IF NOT EXISTS symbol_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            analysis_run_id INTEGER REFERENCES analysis_runs(id) ON DELETE SET NULL,
+            identity TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            qualified_name TEXT NOT NULL,
+            change TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_symbol_changes_file ON symbol_changes(file_id, identity);
+        "#,
+    },
+    Migration {
+        version: 9,
+        name: "add_code_references_and_relationships",
+        sql: r#"
+        CREATE TABLE IF NOT EXISTS code_references (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            target TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            from_symbol TEXT,
+            start_line INTEGER NOT NULL,
+            start_column INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            end_column INTEGER NOT NULL,
+            start_byte INTEGER NOT NULL,
+            end_byte INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_code_references_file ON code_references(file_id);
+
+        -- Derived from code_references and symbols; rebuilt by resolution.
+        CREATE TABLE IF NOT EXISTS relationships (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            source_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            source_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
+            target_file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
+            target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
+            target_name TEXT NOT NULL,
+            certainty TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            evidence TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships(project_id, source_file_id, kind);
+        CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(project_id, target_file_id, kind);
+        "#,
+    },
+    Migration {
+        version: 10,
+        name: "add_complexity_to_symbols",
+        sql: r#"
+        ALTER TABLE symbols ADD COLUMN complexity INTEGER;
+        "#,
+    },
+    Migration {
+        version: 11,
+        name: "create_external_references",
+        sql: r#"
+        CREATE TABLE IF NOT EXISTS external_references (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            content_hash TEXT NOT NULL,
+            raw_value TEXT NOT NULL,
+            resolved_path TEXT NOT NULL,
+            reference_type TEXT NOT NULL,
+            context TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            start_column INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            end_column INTEGER NOT NULL,
+            start_byte INTEGER NOT NULL,
+            end_byte INTEGER NOT NULL,
+            symbol TEXT,
+            -- Evaluation on this machine; refreshed on every deep scan.
+            existence TEXT,
+            is_directory INTEGER,
+            parent_exists INTEGER,
+            unchecked_reason TEXT,
+            inside_project INTEGER,
+            machine_specific TEXT,
+            rule TEXT,
+            severity TEXT,
+            certainty TEXT,
+            message TEXT,
+            last_checked_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_external_references_file ON external_references(file_id);
+        CREATE INDEX IF NOT EXISTS idx_external_references_project ON external_references(project_id, severity);
+        "#,
+    },
+    Migration {
+        version: 12,
+        name: "add_test_code_flag_to_external_references",
+        sql: r#"
+        ALTER TABLE external_references ADD COLUMN in_test_code INTEGER NOT NULL DEFAULT 0;
+        "#,
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {

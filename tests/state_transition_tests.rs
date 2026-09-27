@@ -381,3 +381,78 @@ fn test_unknown_path_produces_clear_error() {
         other => panic!("Expected FileNotFound error, got: {:?}", other),
     }
 }
+
+#[test]
+fn test_scan_summary_counts_edit_then_undo_as_restored() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let file = root.join("a.rs");
+
+    fs::write(&file, "a\nb\n").unwrap();
+    let manager = ProjectManager::default();
+    manager.init(root).unwrap();
+    manager.scan(root, "cli").unwrap();
+
+    fs::write(&file, "a\nB\n").unwrap();
+    let changed = manager.scan(root, "cli").unwrap();
+    assert_eq!(changed.changed_files, 1);
+    assert_eq!(changed.restored_files, 0);
+
+    fs::write(&file, "a\nb\n").unwrap();
+    let undone = manager.scan(root, "cli").unwrap();
+    assert_eq!(undone.changed_files, 0);
+    assert_eq!(undone.restored_files, 1);
+}
+
+#[test]
+fn test_removed_then_restored_with_changes_diffs_against_last_existing_state() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let file = root.join("a.rs");
+
+    fs::write(&file, "keep\nold\n").unwrap();
+    let manager = ProjectManager::default();
+    manager.init(root).unwrap();
+    manager.scan(root, "cli").unwrap();
+
+    fs::remove_file(&file).unwrap();
+    manager.scan(root, "cli").unwrap();
+
+    fs::write(&file, "keep\nnew\n").unwrap();
+    let summary = manager.scan(root, "cli").unwrap();
+    assert_eq!(summary.restored_changed_files, 1);
+
+    let transition = manager.changes(root, "a.rs").unwrap();
+    assert_eq!(transition.transition_type, TransitionType::RestoredModified);
+    assert!(!transition.pending);
+    assert_eq!(transition.added_lines, 1);
+    assert_eq!(transition.removed_lines, 1);
+    let output = transition.format_terminal();
+    assert!(output.contains("-    2  old"));
+    assert!(output.contains("+    2  new"));
+}
+
+#[test]
+fn test_unscanned_edit_is_reported_as_pending() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let file = root.join("a.rs");
+
+    fs::write(&file, "one\n").unwrap();
+    let manager = ProjectManager::default();
+    manager.init(root).unwrap();
+    manager.scan(root, "cli").unwrap();
+
+    fs::write(&file, "one\ntwo\n").unwrap();
+    let pending = manager.changes(root, "a.rs").unwrap();
+    assert!(pending.pending);
+    assert!(pending
+        .format_terminal()
+        .contains("pending, not yet recorded"));
+
+    manager.scan(root, "cli").unwrap();
+    let recorded = manager.changes(root, "a.rs").unwrap();
+    assert!(!recorded.pending);
+    assert_eq!(recorded.transition_type, TransitionType::Modified);
+    assert!(recorded.format_terminal().contains("last recorded change"));
+}

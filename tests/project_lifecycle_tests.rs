@@ -1,4 +1,4 @@
-use inspecteye::analysis::{compute_bytes_hash, compute_file_hash, BasicDeepAnalyzer};
+use inspecteye::analysis::{compute_bytes_hash, compute_file_hash, CodeAnalyzer, DeepAnalyzer};
 use inspecteye::database::{open_database, Repository};
 use inspecteye::git::MockGitProvider;
 use inspecteye::project::{ProjectManager, DB_NAME, INSPECTYE_DIR};
@@ -453,20 +453,20 @@ fn test_deep_scan_analyzes_eligible_skips_ineligible_and_ignored() {
     manager.init(root).unwrap();
     manager.scan(root, "cli").unwrap();
 
-    // Deep-scan with BasicDeepAnalyzer
-    let analyzer = BasicDeepAnalyzer::default();
+    // Deep-scan with CodeAnalyzer
+    let analyzer = CodeAnalyzer::default();
     let deep_res = manager.deep_scan(root, &analyzer).unwrap();
 
     // 5 total files indexed:
     // - src/main.rs: eligible (source, not ignored, exists) -> ANALYZED
     // - src/ignored.rs: is_ignored -> INELIGIBLE
-    // - config.json: kind="config" -> INELIGIBLE
+    // - config.json: kind="config" -> ANALYZED (text only: external references)
     // - vendor/dep.js: kind="dependency" -> INELIGIBLE
-    // - .inspecteyeignore: kind="config" -> INELIGIBLE
-    assert_eq!(deep_res.total_eligible, 1);
-    assert_eq!(deep_res.analyzed, 1);
+    // - .inspecteyeignore: kind="config" -> ANALYZED (text only)
+    assert_eq!(deep_res.total_eligible, 3);
+    assert_eq!(deep_res.analyzed, 3);
     assert_eq!(deep_res.skipped, 0);
-    assert_eq!(deep_res.ineligible, 4);
+    assert_eq!(deep_res.ineligible, 2);
     assert_eq!(deep_res.failed, 0);
 
     // Verify file_analysis in SQLite
@@ -484,7 +484,10 @@ fn test_deep_scan_analyzes_eligible_skips_ineligible_and_ignored() {
     let analysis_rec = analysis.unwrap();
     assert_eq!(analysis_rec.content_hash, main_file.content_hash);
     assert_eq!(analysis_rec.status, "completed");
-    assert_eq!(analysis_rec.analyzer_version.as_deref(), Some("0.1.0"));
+    assert_eq!(
+        analysis_rec.analyzer_version.as_deref(),
+        Some(analyzer.analyzer_version())
+    );
 
     let ignored_file = repo
         .get_file_by_path(project.id, "src/ignored.rs")
@@ -510,7 +513,7 @@ fn test_deep_scan_incremental_skip_and_modification() {
     manager.init(root).unwrap();
     manager.scan(root, "cli").unwrap();
 
-    let analyzer = BasicDeepAnalyzer::default();
+    let analyzer = CodeAnalyzer::default();
 
     // Run 1: Both files analyzed
     let run1 = manager.deep_scan(root, &analyzer).unwrap();
@@ -557,7 +560,7 @@ fn test_deep_scan_removed_files_not_analyzed() {
     manager.init(root).unwrap();
     manager.scan(root, "cli").unwrap();
 
-    let analyzer = BasicDeepAnalyzer::default();
+    let analyzer = CodeAnalyzer::default();
     let run1 = manager.deep_scan(root, &analyzer).unwrap();
     assert_eq!(run1.analyzed, 1);
 
@@ -585,7 +588,7 @@ fn test_status_reports_both_scan_and_deep_scan_details() {
     manager.init(root).unwrap();
     manager.scan(root, "cli").unwrap();
 
-    let analyzer = BasicDeepAnalyzer::default();
+    let analyzer = CodeAnalyzer::default();
     manager.deep_scan(root, &analyzer).unwrap();
 
     let status = manager.status(root).unwrap();

@@ -1,47 +1,36 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SymbolKind {
-    Class,
-    Interface,
-    Struct,
-    Function,
-    Method,
-    Module,
-    Other(String),
-}
+mod external;
+mod history;
+mod impact;
+mod insights;
+mod metrics;
+mod partial;
+mod references;
+mod resolve;
+mod symbols;
+mod tree;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Symbol {
-    pub id: Option<i64>,
-    pub file_id: i64,
-    pub parent_id: Option<i64>,
-    pub kind: SymbolKind,
-    pub name: String,
-    pub signature: Option<String>,
-    pub start_line: u32,
-    pub end_line: u32,
-    pub start_byte: usize,
-    pub end_byte: usize,
-}
+pub use references::{
+    extract_references, is_declaration_name, ExtractedReference, ReferenceKind, ReferenceSpec,
+};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RelationshipKind {
-    Imports,
-    Calls,
-    References,
-    DependsOn,
-    Inherits,
-    Implements,
-    GeneratedFrom,
-    Other(String),
-}
+pub use symbols::{
+    diff_symbols, extract_symbols, symbols_touching_lines, ExtractedSymbol, SymbolChange,
+    SymbolChangeKind, SymbolKind, SymbolSpec,
+};
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Relationship {
-    pub id: Option<i64>,
-    pub source_type: String,
-    pub source_id: i64,
-    pub target_type: String,
-    pub target_id: i64,
-    pub kind: RelationshipKind,
-    pub confidence: f32,
-}
+pub use external::{
+    evaluate as evaluate_external, find_paths, is_test_code, Existence, ExternalCheck,
+    ExternalReference, PathMatch, PathStyle, ScanOptions,
+};
+pub use history::{find_symbol, symbols_of, trace_symbol, SymbolRevision};
+pub use impact::{compute_impact, AffectedFile, ImpactSeed, ImpactStep};
+pub use insights::{row, RankRow, Ranking, CATEGORIES};
+pub use metrics::{file_degrees, import_cycles, FileDegree};
+pub use partial::{
+    partial_type_groups, PartialDiagnosticInput, PartialPart, PartialSymbolInput, PartialTypeGroup,
+};
+pub use resolve::{
+    certainty_rank, find_broken_imports, resolve_relationships, BrokenImport, FileNode,
+    ReferenceNode, RelationshipKind, ResolutionStats, ResolvedRelationship, SymbolNode,
+};
+pub use tree::{build_tree, TreeFile, TreeNode};
